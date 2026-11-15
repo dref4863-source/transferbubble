@@ -49,6 +49,12 @@ class MainActivity : ComponentActivity() {
 
         requestMediaPermissions()
 
+        // FASE 4: la bandeja se inicializa aqui para que los archivos guardados
+        // aparezcan en cuanto se abre la app, aunque la burbuja aun no este
+        // activada (si se inicializara solo con la burbuja, la lista se veria
+        // vacia hasta activarla).
+        Bandeja.init(this)
+
         discovery = PeerDiscovery(this)
 
         // Fase 2: el receptor vive en un servicio en primer plano, asi que

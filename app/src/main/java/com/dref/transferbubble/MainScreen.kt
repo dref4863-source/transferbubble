@@ -268,7 +268,10 @@ fun MainScreen(
                         )
                     }
                     Text(
-                        "Bandeja: ${Bandeja.items.size} archivo(s)",
+                        "Bandeja: ${Bandeja.items.size} archivo(s)" +
+                        if (Bandeja.tareas.isNotEmpty())
+                            " · ${Bandeja.tareas.count { it.estado == EstadoTarea.ESPERANDO_EQUIPO }} en espera"
+                        else "",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
