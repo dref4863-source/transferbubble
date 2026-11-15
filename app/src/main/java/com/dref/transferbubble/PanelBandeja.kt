@@ -53,6 +53,10 @@ class PanelBandeja(
     private val contenedorTareas = LinearLayout(context)
     private val tituloEnviar = TextView(context)
 
+    /** Ultimos valores recibidos en refrescar(), para poder repintar sin args. */
+    private var ultimoAlias = ""
+    private var ultimoFingerprint = ""
+
     init {
         vista = construir()
     }
@@ -175,7 +179,7 @@ class PanelBandeja(
      * Antes solo habia texto, y el usuario no tenia forma de añadir archivos
      * directamente desde la burbuja.
      */
-    private fun filaSeccion(t: String, etiquetaBoton: String, color: Int, alPulsar: () -> Unit): View {
+    private fun filaSeccion(t: String, etiquetaBoton: String, color: Int, alPulsar: () -> Unit): LinearLayout {
         val fila = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -218,11 +222,16 @@ class PanelBandeja(
 
     /** Repinta bandeja, equipos y cola con los datos de ahora mismo. */
     fun refrescar(aliasPropio: String, fingerprintPropio: String) {
+        ultimoAlias = aliasPropio
+        ultimoFingerprint = fingerprintPropio
         pintarArchivos()
         pintarEquipos()
         pintarTareas()
         tituloEnviar.text = "Enviar lo marcado"
     }
+
+    /** Repinta con los ultimos datos conocidos (para los botones internos). */
+    private fun refrescar() = refrescar(ultimoAlias, ultimoFingerprint)
 
     private fun pintarArchivos() {
         contenedorArchivos.removeAllViews()
