@@ -38,13 +38,24 @@ class HttpReceiver(private val context: Context) {
     /** Ids de sesion ya aceptados: no volver a preguntar al usuario. */
     private val acceptedSessions = mutableSetOf<String>()
 
-    /** Carpeta destino: Download/TransferBubble */
+    /**
+     * Carpeta destino.
+     *
+     * IMPORTANTE (bug corregido tras la prueba real): en Android 10+ con
+     * targetSdk 34 el acceso directo a /storage/emulated/0/Download esta
+     * bloqueado por scoped storage: mkdirs() devolvia false EN SILENCIO y al
+     * escribir salia "ENOENT (No such file or directory)".
+     *
+     * Solucion: guardar primero en el almacenamiento PRIVADO de la app, que
+     * siempre es escribible sin permisos. Despues se publica una copia en
+     * Descargas a traves de MediaStore (ver publishToDownloads).
+     */
     val receiveDir: File by lazy {
-        val dir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "TransferBubble"
-        )
-        if (!dir.exists()) dir.mkdirs()
+        val dir = File(context.filesDir, "received")
+        if (!dir.exists() && !dir.mkdirs()) {
+            Log.e(TAG, "No se pudo crear la carpeta privada: ${dir.absolutePath}")
+        }
+        Log.i(TAG, "Carpeta de recepcion: ${dir.absolutePath} (existe=${dir.exists()})")
         dir
     }
 
@@ -227,6 +238,8 @@ class HttpReceiver(private val context: Context) {
             }
             Log.i(TAG, "Archivo recibido: ${out.name} (${out.length()} bytes)")
             respond(client, 200, "OK")
+            // Publica una copia visible en Descargas (MediaStore) sin bloquear.
+            publishToDownloads(out)
             onFileReceived?.invoke(out)
         } catch (e: Exception) {
             Log.e(TAG, "Fallo recibiendo $decodedName: ${e.message}")
@@ -286,6 +299,50 @@ class HttpReceiver(private val context: Context) {
     private fun fingerprint(): String =
         context.getSharedPreferences("tb_prefs", Context.MODE_PRIVATE)
             .getString("fingerprint", null) ?: "unknown"
+
+    /**
+     * Copia el archivo recibido a Descargas para que sea visible desde la
+     * Galeria y el gestor de archivos. Se usa MediaStore porque el acceso
+     * directo a /storage/emulated/0/Download esta bloqueado (scoped storage).
+     * Si falla, no es grave: el archivo original sigue en el almacenamiento
+     * privado de la app y la recepcion se considera correcta.
+     */
+    private fun publishToDownloads(file: File) {
+        try {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, file.name)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, guessMime(file.name))
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/TransferBubble")
+                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(
+                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+            ) ?: run {
+                Log.w(TAG, "MediaStore no devolvio URI para ${file.name}")
+                return
+            }
+            resolver.openOutputStream(uri)?.use { out ->
+                file.inputStream().use { it.copyTo(out) }
+            }
+            values.clear()
+            values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            Log.i(TAG, "Copiado a Descargas/TransferBubble: ${file.name}")
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo publicar en Descargas (el archivo sigue en privado): ${e.message}")
+        }
+    }
+
+    private fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "jpg", "jpeg" -> "image/jpeg"
+        "png" -> "image/png"
+        "mp4" -> "video/mp4"
+        "pdf" -> "application/pdf"
+        "txt" -> "text/plain"
+        else -> "application/octet-stream"
+    }
 
     /** Evita sobrescribir: foto.jpg -> foto (1).jpg */
     private fun uniqueName(name: String): String {
