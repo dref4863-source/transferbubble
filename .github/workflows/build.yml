@@ -9,6 +9,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # NOTA: los secrets NO se pueden usar dentro de un "if:" de un step.
+    # Hacerlo rompe la validacion del workflow y el run falla al arrancar
+    # con 0 jobs (probado). Por eso el valor se pasa como variable de entorno
+    # y el "if" comprueba esa variable.
+    env:
+      KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,8 +27,9 @@ jobs:
           java-version: '17'
 
       # Los runners ubuntu-latest ya traen el Android SDK preinstalado.
-      # NO se usa android-actions/setup-android porque intenta instalar el
-      # paquete 'tools', que ya no existe, y hace fallar el job.
+      # NO se usa android-actions/setup-android: intenta instalar el paquete
+      # 'tools', que ya no existe en el repositorio de Android, y hace fallar
+      # el job con "Failed to find package 'tools'".
       - name: Install required SDK components
         run: |
           SDKMANAGER="$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")"
@@ -29,13 +37,16 @@ jobs:
           "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" "platform-tools" || true
 
       # Decodifica el keystore desde el Secret para que TODOS los builds queden
-      # firmados con LA MISMA clave. Asi se puede actualizar con
-      # "pm install -r" sin desinstalar y sin perder datos.
+      # firmados con LA MISMA clave. Asi se puede actualizar con "pm install -r"
+      # sin desinstalar y sin perder datos.
       - name: Restore signing keystore
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.KS_B64 != ''
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/tb.jks"
+          printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/tb.jks"
           echo "Keystore restaurado: $(stat -c %s "$RUNNER_TEMP/tb.jks") bytes"
+          keytool -list -keystore "$RUNNER_TEMP/tb.jks" -storepass "$KS_PASS" | grep -E 'Alias|SHA1' || true
+        env:
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -49,19 +60,27 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      # La contrasena se pasa por PROPIEDAD DE GRADLE, nunca por variable de
+      # entorno: asi no queda expuesta en los logs del runner.
       - name: Build release APK
         run: |
-          ./gradlew assembleRelease --no-daemon --stacktrace \
-            -PKEYSTORE_PATH="$RUNNER_TEMP/tb.jks" \
-            -PKEYSTORE_PASSWORD="${{ secrets.KEYSTORE_PASSWORD }}" \
-            -PKEY_ALIAS="${{ secrets.KEY_ALIAS }}" \
-            -PKEY_PASSWORD="${{ secrets.KEY_PASSWORD }}"
+          if [ -n "$KS_B64" ]; then
+            echo "== Firmando con keystore propio =="
+            ./gradlew assembleRelease --no-daemon --stacktrace \
+              -PKEYSTORE_PATH="$RUNNER_TEMP/tb.jks" \
+              -PKEYSTORE_PASSWORD="${{ secrets.KEYSTORE_PASSWORD }}" \
+              -PKEY_ALIAS="${{ secrets.KEY_ALIAS }}" \
+              -PKEY_PASSWORD="${{ secrets.KEY_PASSWORD }}"
+          else
+            echo "== Sin secrets: se compila con la clave de debug =="
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          fi
 
       - name: Verify APK signature
         run: |
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           echo "APK: $APK"
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK" | head -5
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK" | head -6
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
