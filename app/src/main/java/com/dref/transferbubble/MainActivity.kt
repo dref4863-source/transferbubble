@@ -12,14 +12,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import com.dref.transferbubble.net.FileToSend
-import com.dref.transferbubble.net.HttpReceiver
 import com.dref.transferbubble.net.PeerDiscovery
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var discovery: PeerDiscovery
-    lateinit var receiver: HttpReceiver
-        private set
 
     /**
      * Permisos de lectura de medios.
@@ -53,7 +50,10 @@ class MainActivity : ComponentActivity() {
         requestMediaPermissions()
 
         discovery = PeerDiscovery(this)
-        receiver = HttpReceiver(this).apply { start() }
+
+        // Fase 2: el receptor vive en un servicio en primer plano, asi que
+        // se sigue recibiendo aunque la app se cierre o pase a segundo plano.
+        ReceiverService.start(this)
 
         handleShareIntent(intent)
 
@@ -62,8 +62,7 @@ class MainActivity : ComponentActivity() {
                 Surface(color = MaterialTheme.colorScheme.background) {
                     MainScreen(
                         activity = this,
-                        discovery = discovery,
-                        receiver = receiver
+                        discovery = discovery
                     )
                 }
             }

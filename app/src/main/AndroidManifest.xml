@@ -55,6 +55,15 @@
                 android:value="androidx.sharetarget.ChooserTargetServiceCompat" />
         </activity>
 
+        <!--
+          Fase 2: receptor siempre activo.
+          foregroundServiceType="dataSync" es obligatorio desde Android 14.
+        -->
+        <service
+            android:name=".ReceiverService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
     </application>
 
 </manifest>

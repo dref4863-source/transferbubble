@@ -13,7 +13,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dref.transferbubble.net.FileSender
-import com.dref.transferbubble.net.HttpReceiver
 import com.dref.transferbubble.net.Peer
 import com.dref.transferbubble.net.PeerDiscovery
 import kotlinx.coroutines.Dispatchers
@@ -24,8 +23,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun MainScreen(
     activity: MainActivity,
-    discovery: PeerDiscovery,
-    receiver: HttpReceiver
+    discovery: PeerDiscovery
 ) {
     val scope = rememberCoroutineScope()
 
@@ -39,14 +37,16 @@ fun MainScreen(
     var progress by remember { mutableStateOf<Int?>(null) }
     var received by remember { mutableStateOf<List<String>>(emptyList()) }
 
+    // El servicio en primer plano avisa cuando llega un archivo, aunque esta
+    // pantalla no sea la que gestiona el receptor.
     DisposableEffect(Unit) {
-        receiver.onFileReceived = { file ->
+        ReceiverService.onFileReceived = { name ->
             activity.runOnUiThread {
-                received = received + "${file.name} (${file.length() / 1024} KB)"
-                status = "Recibido: ${file.name}"
+                received = received + name
+                status = "Recibido: $name"
             }
         }
-        onDispose { receiver.onFileReceived = null }
+        onDispose { ReceiverService.onFileReceived = null }
     }
 
     fun scan() {
@@ -102,6 +102,19 @@ fun MainScreen(
                 .padding(16.dp)
         ) {
             Text(status, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+
+            // Indica si el receptor esta activo en segundo plano.
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (ReceiverService.isRunning) "● Receptor activo en segundo plano"
+                    else "● Receptor detenido",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (ReceiverService.isRunning)
+                        MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.error
+                )
+            }
 
             progress?.let { p ->
                 Spacer(Modifier.height(8.dp))

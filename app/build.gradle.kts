@@ -12,15 +12,47 @@ android {
         applicationId = "com.dref.transferbubble"
         minSdk = 24
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.2.0"
+    }
+
+    /**
+     * FIRMA ESTABLE.
+     *
+     * Antes: se firmaba con signingConfigs.debug, y cada ejecucion de GitHub
+     * Actions generaba una clave nueva -> INSTALL_FAILED_UPDATE_INCOMPATIBLE
+     * y habia que desinstalar para actualizar.
+     *
+     * Ahora: si existen las propiedades KEYSTORE_* (que el workflow pasa desde
+     * los Secrets), se firma con el keystore propio; si no, se cae a debug para
+     * que la compilacion local siga funcionando sin configurar nada.
+     */
+    signingConfigs {
+        create("release") {
+            val ksPath = findProperty("KEYSTORE_PATH") as String?
+                ?: System.getenv("KEYSTORE_PATH")
+            if (ksPath != null && file(ksPath).exists()) {
+                storeFile = file(ksPath)
+                storePassword = (findProperty("KEYSTORE_PASSWORD") as String?)
+                    ?: System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = (findProperty("KEY_ALIAS") as String?)
+                    ?: System.getenv("KEY_ALIAS")
+                keyPassword = (findProperty("KEY_PASSWORD") as String?)
+                    ?: System.getenv("KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Firmado con la clave de debug para que el APK sea instalable sin keystore extra.
-            signingConfig = signingConfigs.getByName("debug")
+            val ksPath = findProperty("KEYSTORE_PATH") as String?
+                ?: System.getenv("KEYSTORE_PATH")
+            signingConfig = if (ksPath != null && file(ksPath).exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
