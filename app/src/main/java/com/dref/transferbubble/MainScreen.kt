@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -105,15 +106,43 @@ fun MainScreen(
 
             // Indica si el receptor esta activo en segundo plano.
             Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (ReceiverService.isRunning) "● Receptor activo en segundo plano"
-                    else "● Receptor detenido",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (ReceiverService.isRunning)
-                        MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.error
-                )
+            // serviceRefresh solo sirve para forzar la recomposicion cuando
+            // pulsamos un boton (el estado vive en el servicio, no en Compose).
+            val serviceRefresh = remember { mutableStateOf(0) }
+            key(serviceRefresh.value) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        when {
+                            ReceiverService.isRunning -> "● Receptor activo en segundo plano"
+                            ReceiverService.isPaused -> "● Receptor en pausa"
+                            else -> "● Receptor detenido"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when {
+                            ReceiverService.isRunning -> MaterialTheme.colorScheme.primary
+                            ReceiverService.isPaused -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.error
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    // Controles del receptor: los mismos que trae la notificacion,
+                    // pero aqui a mano para no tener que desplegarla.
+                    if (ReceiverService.isRunning) {
+                        TextButton(onClick = {
+                            ReceiverService.send(activity, ReceiverService.ACTION_PAUSE)
+                            serviceRefresh.value++
+                        }) { Text("Pausar") }
+                    } else {
+                        TextButton(onClick = {
+                            ReceiverService.send(activity, ReceiverService.ACTION_RESUME)
+                            serviceRefresh.value++
+                        }) { Text("Activar") }
+                    }
+                    TextButton(onClick = {
+                        ReceiverService.send(activity, ReceiverService.ACTION_STOP)
+                        serviceRefresh.value++
+                    }) { Text("Detener") }
+                }
             }
 
             progress?.let { p ->
