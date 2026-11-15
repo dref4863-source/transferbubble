@@ -4,6 +4,27 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+/*
+ * FIRMA ESTABLE
+ * -------------
+ * Antes se firmaba con signingConfigs.debug y cada ejecucion de GitHub Actions
+ * generaba una clave nueva -> INSTALL_FAILED_UPDATE_INCOMPATIBLE y habia que
+ * desinstalar para actualizar.
+ *
+ * Ahora, si el workflow aporta las propiedades KEYSTORE_* (desde los Secrets),
+ * se firma con el keystore propio y todos los builds son actualizables entre si.
+ * Si no hay keystore (compilacion local), se cae a la clave de debug.
+ *
+ * Las propiedades se leen fuera del bloque android() a proposito: leerlas dentro
+ * de signingConfigs puede fallar porque el bloque se evalua antes de que el
+ * proyecto tenga las propiedades cargadas.
+ */
+val ksPath: String? = findProperty("KEYSTORE_PATH") as String?
+val ksPassword: String? = findProperty("KEYSTORE_PASSWORD") as String?
+val ksAlias: String? = findProperty("KEY_ALIAS") as String?
+val ksKeyPassword: String? = findProperty("KEY_PASSWORD") as String?
+val hasKeystore = ksPath != null && file(ksPath).exists()
+
 android {
     namespace = "com.dref.transferbubble"
     compileSdk = 34
@@ -16,29 +37,13 @@ android {
         versionName = "0.2.0"
     }
 
-    /**
-     * FIRMA ESTABLE.
-     *
-     * Antes: se firmaba con signingConfigs.debug, y cada ejecucion de GitHub
-     * Actions generaba una clave nueva -> INSTALL_FAILED_UPDATE_INCOMPATIBLE
-     * y habia que desinstalar para actualizar.
-     *
-     * Ahora: si existen las propiedades KEYSTORE_* (que el workflow pasa desde
-     * los Secrets), se firma con el keystore propio; si no, se cae a debug para
-     * que la compilacion local siga funcionando sin configurar nada.
-     */
-    signingConfigs {
-        create("release") {
-            val ksPath = findProperty("KEYSTORE_PATH") as String?
-                ?: System.getenv("KEYSTORE_PATH")
-            if (ksPath != null && file(ksPath).exists()) {
-                storeFile = file(ksPath)
-                storePassword = (findProperty("KEYSTORE_PASSWORD") as String?)
-                    ?: System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = (findProperty("KEY_ALIAS") as String?)
-                    ?: System.getenv("KEY_ALIAS")
-                keyPassword = (findProperty("KEY_PASSWORD") as String?)
-                    ?: System.getenv("KEY_PASSWORD")
+    if (hasKeystore) {
+        signingConfigs {
+            create("firma") {
+                storeFile = file(ksPath!!)
+                storePassword = ksPassword
+                keyAlias = ksAlias
+                keyPassword = ksKeyPassword
             }
         }
     }
@@ -46,13 +51,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            val ksPath = findProperty("KEYSTORE_PATH") as String?
-                ?: System.getenv("KEYSTORE_PATH")
-            signingConfig = if (ksPath != null && file(ksPath).exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig = if (hasKeystore) signingConfigs.getByName("firma")
+                            else signingConfigs.getByName("debug")
         }
     }
 

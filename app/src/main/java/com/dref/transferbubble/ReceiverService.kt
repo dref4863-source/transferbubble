@@ -75,7 +75,12 @@ class ReceiverService : Service() {
         receiver = HttpReceiver(this).apply {
             onFileReceived = { file ->
                 Log.i(TAG, "Archivo recibido: ${file.name} (${file.length()} bytes)")
-                onFileReceived?.invoke(file.name)
+                // OJO: hay que cualificar con Companion. Dentro de este apply(),
+                // "onFileReceived" se resuelve al de HttpReceiver (que espera un
+                // File) y provocaba: "Argument type mismatch: actual type is
+                // 'kotlin.String!', but 'java.io.File' was expected".
+                // El que queremos avisar es el observador del servicio (String).
+                Companion.onFileReceived?.invoke(file.name)
                 updateNotification("Recibido: ${file.name}")
             }
             start()
