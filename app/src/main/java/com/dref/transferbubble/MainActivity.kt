@@ -2,10 +2,12 @@ package com.dref.transferbubble
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
@@ -20,6 +22,22 @@ class MainActivity : ComponentActivity() {
         private set
 
     /**
+     * Permisos de lectura de medios.
+     *
+     * BUG CORREGIDO (causa principal de que no se enviara nada): la app
+     * declaraba READ_MEDIA_IMAGES/VIDEO y READ_EXTERNAL_STORAGE en el
+     * manifiesto, pero NUNCA los solicitaba en tiempo de ejecucion.
+     * Sin ese permiso, contentResolver.query() sobre un content:// de la
+     * Galeria devuelve vacio: el nombre quedaba como "archivo", el tamano en 0
+     * y la lectura del contenido fallaba. Ahora se piden al arrancar.
+     */
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        android.util.Log.i("TB-Main", "Permisos concedidos: $result")
+    }
+
+    /**
      * Archivos que llegan por el menu Compartir.
      *
      * Es un estado observable de Compose (mutableStateOf) a proposito: con
@@ -31,6 +49,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        requestMediaPermissions()
 
         discovery = PeerDiscovery(this)
         receiver = HttpReceiver(this).apply { start() }
@@ -54,6 +74,29 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleShareIntent(intent)
+    }
+
+    /** Pide en tiempo de ejecucion los permisos que el manifiesto declara. */
+    private fun requestMediaPermissions() {
+        val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+
+            arrayOf(
+                android.Manifest.permission.READ_MEDIA_IMAGES,
+                android.Manifest.permission.READ_MEDIA_VIDEO
+            )
+        } else {
+            // Android 12 y anteriores
+            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        val missing = needed.filter {
+            checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            android.util.Log.i("TB-Main", "Solicitando permisos: $missing")
+            permissionLauncher.launch(missing.toTypedArray())
+        } else {
+            android.util.Log.i("TB-Main", "Permisos de medios ya concedidos")
+        }
     }
 
     /** Lee ACTION_SEND / ACTION_SEND_MULTIPLE y resuelve nombre, tamano y tipo. */
