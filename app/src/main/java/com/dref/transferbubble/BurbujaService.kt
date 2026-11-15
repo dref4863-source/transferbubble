@@ -20,10 +20,9 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.TextView
 import com.dref.transferbubble.net.Peer
-import com.dref.transferbubble.net.PeerDiscovery
-import kotlin.concurrent.thread
 import kotlin.math.abs
 
 /**
@@ -38,6 +37,13 @@ import kotlin.math.abs
  * las apps, asi que una ventana flotante no puede leer lo que hay debajo ni
  * aceptar un drag&drop de otra app. Lo que si se puede es ser la puerta de
  * entrada permanente: guardar en la bandeja y enviar cuando quieras.
+ *
+ * CAMBIOS DE ESTA VERSION (peticiones del usuario):
+ *   1. Burbuja MAS PEQUEÑA (76dp -> 54dp): el icono era demasiado grande.
+ *   2. Cruz "✕" en la esquina de la burbuja para CERRARLA por completo desde
+ *      la propia burbuja (antes solo se podia desde los ajustes de la app).
+ *   3. El bucle de red ya NO vive aqui: lo lleva Rastreo (objeto compartido).
+ *      Asi la app tambien puede enviar con la burbuja apagada.
  */
 class BurbujaService : Service() {
 
@@ -45,7 +51,6 @@ class BurbujaService : Service() {
         private const val TAG = "TB-Burbuja"
         private const val CHANNEL_ID = "tb_burbuja"
         private const val NOTIF_ID = 1002
-        private const val RASTREO_MS = 7000L
 
         @Volatile var activa = false
             private set
@@ -65,32 +70,43 @@ class BurbujaService : Service() {
 
     private val ui = Handler(Looper.getMainLooper())
     private var wm: WindowManager? = null
-    private lateinit var discovery: PeerDiscovery
 
+    private var contenedor: FrameLayout? = null
     private var burbuja: TextView? = null
     private var params: WindowManager.LayoutParams? = null
     private var panel: PanelBandeja? = null
 
     @Volatile private var peersVistos: List<Peer> = emptyList()
-    @Volatile private var sigo = true
+
+    /** Oyente del motor de rastreo, para poder darlo de baja al destruirnos. */
+    private val oyenteRastreo: (List<Peer>) -> Unit = { lista ->
+        peersVistos = lista
+        ui.post {
+            panel?.refrescar(Rastreo.aliasPropio(this), Rastreo.fingerprintPropio(this))
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "Servicio de burbuja creado")
         Bandeja.init(this)
         Bandeja.onCambio = { ui.post { refrescar() } }
-        discovery = PeerDiscovery(this)
         crearCanal()
         startForeground(NOTIF_ID, notificacion())
         activa = true
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+
+        // Si la burbuja se enciende con el receptor apagado, se enciende tambien:
+        // sin receptor no hay motor de red y los envios quedarian en espera.
+        ReceiverService.start(this)
+        Rastreo.observar(oyenteRastreo)
+        if (Rastreo.activo) peersVistos = Rastreo.peers
 
         if (!tienePermiso(this)) {
             Log.w(TAG, "Sin permiso de superposicion: no se puede mostrar la burbuja")
             return
         }
         ui.post { mostrarBurbuja() }
-        iniciarRastreo()
     }
 
     override fun onStartCommand(i: Intent?, f: Int, s: Int): Int = START_STICKY
@@ -99,7 +115,7 @@ class BurbujaService : Service() {
     override fun onDestroy() {
         Log.i(TAG, "Servicio de burbuja detenido")
         activa = false
-        sigo = false
+        Rastreo.dejarDeObservar(oyenteRastreo)
         Bandeja.onCambio = null
         ui.post { quitarBurbuja(); cerrarPanel() }
         super.onDestroy()
@@ -107,17 +123,17 @@ class BurbujaService : Service() {
 
     private fun refrescar() {
         burbuja?.text = textoBurbuja()
-        panel?.refrescar(discovery.deviceAlias, discovery.selfFingerprint)
+        panel?.refrescar(Rastreo.aliasPropio(this), Rastreo.fingerprintPropio(this))
     }
 
     // ------------------------------------------------------------------ burbuja
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    private fun circulo(color: Int) = GradientDrawable().apply {
+    private fun circulo(color: Int, bordeDp: Int = 2) = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
         setColor(color)
-        setStroke(dp(2), 0xFFFFFFFF.toInt())
+        setStroke(dp(bordeDp), 0xFFFFFFFF.toInt())
     }
 
     private fun tipoVentana(): Int =
@@ -132,24 +148,51 @@ class BurbujaService : Service() {
     }
 
     private fun mostrarBurbuja() {
-        if (burbuja != null) return
+        if (contenedor != null) return
         val w = wm ?: return
-        // BUG CORREGIDO ("no se puede pulsar facil, se escurre"):
-        // antes eran 58dp y el arrastre se activaba con solo 10dp de movimiento,
-        // asi que el mas minimo temblor del dedo contaba como arrastre y el
-        // panel no se abria nunca. Ahora la burbuja es mas grande y hace falta
-        // un desplazamiento claro para arrastrarla.
-        val tam = dp(76)
 
-        val v = TextView(this).apply {
+        // PETICION DEL USUARIO: "el icono es un poco grande, hay que disminuirla".
+        // Antes 76dp (y antes de eso 58dp) -> ahora 54dp, que sigue siendo
+        // comodo para pulsar pero no tapa media pantalla.
+        val tam = dp(54)
+        val tamCruz = dp(22)
+
+        // El contenedor lleva DOS cosas: la burbuja (abajo-izquierda) y una
+        // pequeña cruz de cerrar (arriba-derecha). Al ser hijos del mismo
+        // FrameLayout, los dos se mueven juntos al arrastrar y la cruz recibe
+        // el toque antes que la burbuja (esta dibujada encima).
+        val marco = FrameLayout(this)
+        val bola = TextView(this).apply {
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
-            textSize = 19f
+            textSize = 15f
             setTypeface(null, Typeface.BOLD)
             text = textoBurbuja()
             background = circulo(0xFF1565C0.toInt())
-            elevation = dp(6).toFloat()
         }
+        marco.addView(bola, FrameLayout.LayoutParams(tam, tam).apply {
+            gravity = Gravity.BOTTOM or Gravity.START
+        })
+
+        // Cruz de cierre: cierra la burbuja COMPLETAMENTE (y con ella el envio
+        // por burbuja). Es la opcion que faltaba: antes habia que ir a la app.
+        val cruz = TextView(this).apply {
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            text = "✕"
+            background = circulo(0xFFC62828.toInt(), 1)
+            elevation = dp(8).toFloat()
+            contentDescription = "Cerrar la burbuja"
+            setOnClickListener {
+                Log.i(TAG, "Cerrando la burbuja desde la propia burbuja")
+                stopSelf()
+            }
+        }
+        marco.addView(cruz, FrameLayout.LayoutParams(tamCruz, tamCruz).apply {
+            gravity = Gravity.TOP or Gravity.END
+        })
 
         val p = WindowManager.LayoutParams(
             tam, tam, tipoVentana(),
@@ -161,7 +204,7 @@ class BurbujaService : Service() {
             y = dp(220)
         }
 
-        v.setOnTouchListener(object : View.OnTouchListener {
+        marco.setOnTouchListener(object : View.OnTouchListener {
             private var ini = 0L
             private var movido = false
             private var abajoX = 0f
@@ -176,8 +219,8 @@ class BurbujaService : Service() {
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        // Umbral claro (22dp) para no confundir un toque con un arrastre.
-                        if (abs(e.rawX - abajoX) > dp(22) || abs(e.rawY - abajoY) > dp(22)) movido = true
+                        // Umbral claro (18dp) para no confundir un toque con un arrastre.
+                        if (abs(e.rawX - abajoX) > dp(18) || abs(e.rawY - abajoY) > dp(18)) movido = true
                         if (movido) {
                             p.x = (e.rawX.toInt() - tam / 2).coerceAtLeast(0)
                             p.y = (e.rawY.toInt() - tam / 2).coerceAtLeast(0)
@@ -186,8 +229,6 @@ class BurbujaService : Service() {
                         return true
                     }
                     MotionEvent.ACTION_UP -> {
-                        // Se abre con un toque corto, o con pulsacion algo larga
-                        // sin desplazamiento (mas tolerante que antes).
                         if (!movido && System.currentTimeMillis() - ini < 900) abrirPanel()
                         return true
                     }
@@ -197,17 +238,19 @@ class BurbujaService : Service() {
         })
 
         try {
-            w.addView(v, p)
-            burbuja = v
+            w.addView(marco, p)
+            contenedor = marco
+            burbuja = bola
             params = p
-            Log.i(TAG, "Burbuja mostrada")
+            Log.i(TAG, "Burbuja mostrada (${tam}px)")
         } catch (e: Exception) {
             Log.e(TAG, "No se pudo mostrar la burbuja: ${e.message}")
         }
     }
 
     private fun quitarBurbuja() {
-        burbuja?.let { try { wm?.removeView(it) } catch (_: Exception) {} }
+        contenedor?.let { try { wm?.removeView(it) } catch (_: Exception) {} }
+        contenedor = null
         burbuja = null
     }
 
@@ -219,7 +262,7 @@ class BurbujaService : Service() {
         val alto = resources.displayMetrics.heightPixels
         val p = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            (alto * 0.78).toInt(),
+            (alto * 0.82).toInt(),
             tipoVentana(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
@@ -241,6 +284,12 @@ class BurbujaService : Service() {
                 } catch (e: Exception) {
                     Log.e(TAG, "No se pudo abrir el selector: ${e.message}")
                 }
+            },
+            // "Salir" del panel: cierra la burbuja por completo (igual que la cruz).
+            alCerrarTodo = {
+                Log.i(TAG, "Cerrando la burbuja desde el panel")
+                cerrarPanel()
+                stopSelf()
             }
         )
         try {
@@ -260,43 +309,10 @@ class BurbujaService : Service() {
     private fun programar(archivos: List<String>, equipos: List<Destino>): Int {
         val n = Bandeja.programarEnvios(archivos, equipos)
         Log.i(TAG, "Programados $n envio(s)")
-        // Intento inmediato y refresco del panel.
-        ui.post {
-            thread { lanzarProcesado() }
-            refrescar()
-        }
+        // Ciclo inmediato del motor compartido (no hay que esperar 7 s).
+        Rastreo.ahora(this)
+        ui.post { refrescar() }
         return n
-    }
-
-    // ------------------------------------------------------------------ rastreo
-
-    private fun iniciarRastreo() {
-        thread {
-            while (sigo) {
-                try {
-                    lanzarProcesado()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error en rastreo: ${e.message}")
-                }
-                try { Thread.sleep(RASTREO_MS) } catch (_: InterruptedException) {}
-            }
-        }
-    }
-
-    private fun lanzarProcesado() {
-        val peers = discovery.discover()
-        peersVistos = peers
-        // Los equipos que ya no estan conectados se muestran como "desconectado".
-        ui.post {
-            panel?.refrescar(discovery.deviceAlias, discovery.selfFingerprint)
-            // Envia automaticamente lo que esperaba a algun equipo que aparecio.
-            Bandeja.procesar(
-                context = applicationContext,
-                peers = peers,
-                aliasPropio = discovery.deviceAlias,
-                fingerprintPropio = discovery.selfFingerprint
-            )
-        }
     }
 
     // ------------------------------------------------------------- notificacion

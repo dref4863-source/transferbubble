@@ -84,6 +84,11 @@ class ReceiverService : Service() {
         // da ~5 segundos o mata el proceso.
         startForeground(NOTIF_ID, buildNotification())
         startReceiver()
+        // ESTE es el arreglo de "solo se puede enviar desde la burbuja": el
+        // motor de descubrimiento/envio vive en Rastreo y lo arranca el receptor,
+        // que es el unico servicio que siempre esta vivo. Asi la app puede
+        // enviar aunque la burbuja este apagada.
+        Rastreo.iniciar(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -94,7 +99,14 @@ class ReceiverService : Service() {
             // Sin accion = arranque normal (la app se abrio).
             // Si el usuario lo habia pausado a proposito, se respeta la pausa:
             // no tiene sentido que abrir la app lo reactive sin querer.
-            else -> if (isPaused) updateNotification() else startReceiver()
+            else -> if (isPaused) {
+                // Al abrir la app se reinicia el motor si hacia falta.
+                Rastreo.iniciar(this)
+                updateNotification()
+            } else {
+                Rastreo.iniciar(this)
+                startReceiver()
+            }
         }
         // START_STICKY: si Android lo mata por memoria, lo relanza.
         return START_STICKY
@@ -146,6 +158,20 @@ class ReceiverService : Service() {
         receiver = null
         isRunning = false
         isPaused = false
+        // PETICION DEL USUARIO: "la opcion de cerrar en el panel de
+        // notificaciones cierre tanto la conexion del panel y tambien la
+        // burbuja". Antes Detener solo apagaba el receptor y la burbuja se
+        // quedaba flotando en la pantalla, sin motor de red: parecia que
+        // "no cerraba del todo".
+        Rastreo.detener()
+        try {
+            if (BurbujaService.activa) {
+                Log.i(TAG, "Detener tambien cierra la burbuja flotante")
+                BurbujaService.stop(this)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo cerrar la burbuja: ${e.message}")
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {

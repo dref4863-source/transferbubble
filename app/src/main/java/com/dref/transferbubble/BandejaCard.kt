@@ -60,11 +60,7 @@ fun BandejaCard(
                     style = MaterialTheme.typography.bodySmall
                 )
             } else {
-                Column(
-                    Modifier
-                        .heightIn(max = 160.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
+                Column {
                     Bandeja.items.forEach { item ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(
@@ -96,11 +92,9 @@ fun BandejaCard(
             // ---------- 2) equipos
             Text("2) Elige los equipos", style = MaterialTheme.typography.bodySmall)
             val vistos = peers.associateBy { it.fingerprint }
-            Column(
-                Modifier
-                    .heightIn(max = 160.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
+            // Sin scroll propio: la pantalla entera ya se desplaza. (Anidar dos
+            // scroll verticales en Compose lanza excepcion en tiempo de ejecucion.)
+            Column {
                 peers.forEach { peer ->
                     val conectado = true
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -168,6 +162,12 @@ fun BandejaCard(
                     } else {
                         equipos.forEach { Bandeja.recordarDestino(it) }
                         val n = Bandeja.programarEnvios(archivos, equipos)
+                        // IMPORTANTE (arreglo de "no se puede enviar desde el
+                        // panel principal"): se pide al motor de red un ciclo
+                        // INMEDIATO. Antes el panel de la app solo creaba las
+                        // tareas y nadie las procesaba si la burbuja estaba
+                        // apagada, asi que parecia que el boton no hacia nada.
+                        Rastreo.ahora(activity)
                         aviso = "Programado: $n envio(s). Lo desconectado queda en espera."
                         alCambiar()
                     }
@@ -188,11 +188,10 @@ fun BandejaCard(
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Bold
                 )
-                Column(
-                    Modifier
-                        .heightIn(max = 120.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
+                // Cola: sin scroll propio tampoco (mismo motivo: anidar scrolls verticales
+                // en Compose revienta). Se limita a los ultimos 6 y a la pantalla
+                // entera le sobra scroll.
+                Column {
                     Bandeja.tareas.takeLast(6).reversed().forEach { t ->
                         val color = when (t.estado) {
                             EstadoTarea.ENVIADO -> MaterialTheme.colorScheme.primary

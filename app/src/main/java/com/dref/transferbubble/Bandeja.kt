@@ -83,14 +83,33 @@ object Bandeja {
     private val worker = Executors.newSingleThreadExecutor()
     private val ui = Handler(Looper.getMainLooper())
 
-    /** Aviso a la interfaz (burbuja/panel) cuando cambia algo. */
+    /**
+     * Aviso a las interfaces cuando cambia algo.
+     *
+     * Antes habia UN solo callback (`onCambio`) y lo ponia la burbuja. Eso
+     * significaba que, sin burbuja activa, la bandeja no avisaba a nadie: la
+     * app se quedaba con la lista vieja en pantalla. Ahora hay una lista de
+     * oyentes (app + burbuja a la vez).
+     */
+    private val oyentes = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    /** Compatibilidad: la burbuja sigue pudiendo asignar un unico callback. */
     @Volatile
     var onCambio: (() -> Unit)? = null
+
+    fun observar(oyente: () -> Unit) {
+        if (!oyentes.contains(oyente)) oyentes.add(oyente)
+    }
+
+    fun dejarDeObservar(oyente: () -> Unit) {
+        oyentes.remove(oyente)
+    }
 
     private fun avisar() {
         // OJO: no llamar nunca desde el hilo principal en bucle; basta con
         // notificar y que cada interfaz se refresque en su propio hilo.
         try { onCambio?.invoke() } catch (_: Exception) {}
+        oyentes.forEach { o -> try { o() } catch (_: Exception) {} }
     }
 
     @Volatile

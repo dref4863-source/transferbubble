@@ -31,7 +31,13 @@ class PanelBandeja(
     private val alEnviar: (List<String>, List<Destino>) -> Int,
     private val peersActuales: () -> List<Peer>,
     /** Abre el selector del sistema para añadir archivos a la bandeja. */
-    private val alElegir: () -> Unit = {}
+    private val alElegir: () -> Unit = {},
+    /**
+     * Cierra la burbuja POR COMPLETO (peticion del usuario: "que haya una opcion
+     * de cerrar completamente la burbuja desde la burbuja"). El boton "Cerrar"
+     * solo oculta el panel; "Salir" apaga la burbuja.
+     */
+    private val alCerrarTodo: () -> Unit = {}
 ) {
 
     val vista: View
@@ -72,10 +78,26 @@ class PanelBandeja(
     }
 
     private fun construir(): View {
+        // BUG CORREGIDO ("en el panel no se puede deslizar hacia arriba" y
+        // "la opcion de activar burbuja queda fuera de la pantalla"):
+        // antes la raiz era un LinearLayout con DOS ScrollView anidados y pesos
+        // 1f cada uno. Cuando la cabecera + secciones + cola + boton sumaban mas
+        // que el alto de la ventana, todo lo de abajo (el boton Enviar) se salia
+        // y NO habia forma de llegar a ello: la raiz no se desplazaba.
+        //
+        // Ahora la raiz es UN ScrollView que contiene todo el panel. Se desliza
+        // de arriba a abajo y siempre se alcanza cualquier control.
         val raiz = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(14), dp(12), dp(12))
             background = redondo(0xFF11151C.toInt(), 18)
+        }
+
+        val desplazable = ScrollView(context).apply {
+            isFillViewport = true
+            // Barra visible para que se note que hay mas contenido debajo.
+            isVerticalScrollBarEnabled = true
+            addView(raiz)
         }
 
         // ---- cabecera
@@ -91,6 +113,9 @@ class PanelBandeja(
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
         cab.addView(boton("Cerrar", 0xFF37474F.toInt()) { alCerrar() })
+        // "Salir" apaga la burbuja entera (lo pedido: cerrarla desde la propia
+        // burbuja). "Cerrar" solo oculta este panel.
+        cab.addView(boton("✕ Salir", 0xFFC62828.toInt()) { alCerrarTodo() })
         raiz.addView(cab)
 
         // ---- 1) archivos
@@ -103,10 +128,14 @@ class PanelBandeja(
             refrescar()
         })
         raiz.addView(filaArch)
+        // Altura FIJA (no "peso 1f"): dentro de un ScrollView padre no hay
+        // espacio sobrante que repartir, asi que un peso 1f dejaria la lista
+        // aplastada a cero. Con altura fija se ve una porcion y se desplaza.
         val scrollA = ScrollView(context).apply {
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(150)
             )
+            isVerticalScrollBarEnabled = true
             addView(contenedorArchivos)
         }
         contenedorArchivos.orientation = LinearLayout.VERTICAL
@@ -116,8 +145,9 @@ class PanelBandeja(
         raiz.addView(seccion("2) Enviar a estos equipos"))
         val scrollE = ScrollView(context).apply {
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(150)
             )
+            isVerticalScrollBarEnabled = true
             addView(contenedorEquipos)
         }
         contenedorEquipos.orientation = LinearLayout.VERTICAL
@@ -171,7 +201,7 @@ class PanelBandeja(
         }
         raiz.addView(tituloEnviar)
 
-        return raiz
+        return desplazable
     }
 
     /**

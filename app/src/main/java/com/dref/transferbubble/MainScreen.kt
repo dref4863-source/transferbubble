@@ -1,8 +1,8 @@
 package com.dref.transferbubble
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
@@ -20,6 +20,35 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * PANTALLA PRINCIPAL.
+ *
+ * CORRECCIONES DE ESTA VERSION (peticiones del usuario):
+ *
+ *  1. "en el panel no se puede deslizar hacia arriba / la opcion de activar
+ *     burbuja queda fuera del foco de la pantalla".
+ *     ANTES: el contenido era una Column FIJA con un LazyColumn con peso 1f en
+ *     medio. La Column no se desplazaba, asi que cuando la bandeja crecia todo
+ *     lo de abajo (incluido el boton "Activar burbuja") se salia por debajo y
+ *     era INALCANZABLE.
+ *     AHORA: toda la pantalla es un unico contenedor desplazable
+ *     (verticalScroll). Se puede bajar hasta el final y llegar a cualquier
+ *     control, tenga la bandeja los archivos que tenga.
+ *
+ *  2. "eliminar la informacion duplicada de la parte superior y dejar solo los
+ *     archivos elegibles".
+ *     ANTES habia una tarjeta "Sin archivos que enviar / Listo para enviar
+ *     (n): ..." que repetia exactamente lo que ya muestra la bandeja.
+ *     AHORA esa tarjeta ya NO existe: la unica lista de archivos es la bandeja
+ *     (con sus checks), que es tambien donde se eligen los equipos.
+ *
+ *  3. "los archivos solo se pueden enviar desde la burbuja, y no se pueden
+ *     desde el panel principal".
+ *     CAUSA: el bucle de red vivia dentro de BurbujaService. Sin burbuja, nadie
+ *     llamaba a Bandeja.procesar() y las tareas se quedaban en espera.
+ *     AHORA el motor es Rastreo (lo arranca el receptor) y se puede disparar
+ *     desde aqui con Rastreo.ahora().
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
@@ -28,44 +57,74 @@ fun MainScreen(
 ) {
     val scope = rememberCoroutineScope()
 
-    // Leemos el estado observable de la Activity: asi al compartir desde otra
-    // app sin cerrar la nuestra, la interfaz se actualiza sola.
+    // Archivos que llegaron por el menu Compartir (estado de la Activity).
     val filesToSend by activity.sharedFiles
 
-    var peers by remember { mutableStateOf<List<Peer>>(emptyList()) }
+    // Equipos: los publica el motor compartido cada 7 s. Antes se buscaban solo
+    // al pulsar el boton, y ademas por un camino independiente al de la burbuja.
+    var peers by remember { mutableStateOf<List<Peer>>(Rastreo.peers) }
     var scanning by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Listo") }
     var progress by remember { mutableStateOf<Int?>(null) }
     var received by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    // El servicio en primer plano avisa cuando llega un archivo, aunque esta
-    // pantalla no sea la que gestiona el receptor.
+    // Refresco de la bandeja cuando cambia algo (desde la app o desde la burbuja).
+    var refrescoBandeja by remember { mutableStateOf(0) }
+
     DisposableEffect(Unit) {
+        // El servicio en primer plano avisa cuando llega un archivo.
         ReceiverService.onFileReceived = { name ->
             activity.runOnUiThread {
                 received = received + name
                 status = "Recibido: $name"
             }
         }
-        onDispose { ReceiverService.onFileReceived = null }
-    }
+        // Escuchamos al motor de red (hilo aparte -> a la interfaz).
+        val oyentePeers: (List<Peer>) -> Unit = { lista ->
+            activity.runOnUiThread { peers = lista }
+        }
+        Rastreo.observar(oyentePeers)
+        // Escuchamos a la bandeja: asi la pantalla refleja al instante lo que se
+        // añade o se envia (tambien lo que se hace desde la burbuja).
+        val oyenteBandeja: () -> Unit = {
+            activity.runOnUiThread { refrescoBandeja++ }
+        }
+        Bandeja.observar(oyenteBandeja)
 
-    fun scan() {
-        scope.launch {
-            scanning = true
-            status = "Buscando equipos..."
-            val result = withContext(Dispatchers.IO) { discovery.discover() }
-            peers = result
-            scanning = false
-            status = if (result.isEmpty())
-                "No se encontro ningun equipo. Comprueba que la otra app este abierta."
-            else "${result.size} equipo(s) encontrado(s)"
+        // Arranca el motor si no lo estaba (normalmente lo arranca el receptor).
+        Rastreo.iniciar(activity)
+        peers = Rastreo.peers
+
+        onDispose {
+            ReceiverService.onFileReceived = null
+            Rastreo.dejarDeObservar(oyentePeers)
+            Bandeja.dejarDeObservar(oyenteBandeja)
         }
     }
 
+    /** Fuerza un ciclo de busqueda inmediato (no espera los 7 s del motor). */
+    fun scan() {
+        scanning = true
+        status = "Buscando equipos..."
+        Rastreo.ahora(activity)
+        // El resultado llega por el oyente; aqui solo quitamos el indicador.
+        scope.launch {
+            kotlinx.coroutines.delay(4200)
+            peers = Rastreo.peers
+            scanning = false
+            status = if (peers.isEmpty())
+                "No se encontro ningun equipo. Comprueba que la otra app este abierta."
+            else "${peers.size} equipo(s) encontrado(s)"
+        }
+    }
+
+    /**
+     * Envio DIRECTO de lo que acaba de llegar por Compartir, sin pasar por la
+     * bandeja. Sirve para el caso rapido: compartir -> tocar el equipo.
+     */
     fun sendTo(peer: Peer) {
         if (filesToSend.isEmpty()) {
-            status = "Primero comparte un archivo desde otra app (Compartir -> TransferBubble)"
+            status = "No hay archivos recien compartidos. Usa la bandeja para elegir."
             return
         }
         scope.launch {
@@ -75,8 +134,8 @@ fun MainScreen(
                 FileSender(activity).send(
                     peer = peer,
                     files = filesToSend,
-                    senderAlias = discovery.deviceAlias,
-                    senderFingerprint = discovery.selfFingerprint
+                    senderAlias = Rastreo.aliasPropio(activity),
+                    senderFingerprint = Rastreo.fingerprintPropio(activity)
                 ) { p -> progress = p.percent }
             }
             progress = null
@@ -90,30 +149,32 @@ fun MainScreen(
                 title = { Text("TransferBubble") },
                 actions = {
                     IconButton(onClick = { scan() }, enabled = !scanning) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Buscar")
+                        if (scanning) CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        else Icon(Icons.Default.Refresh, contentDescription = "Buscar equipos")
                     }
                 }
             )
         }
     ) { padding ->
+        // UN SOLO contenedor desplazable para toda la pantalla (arreglo del
+        // "no se puede deslizar hacia arriba").
         Column(
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize()
-                .padding(16.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
             Text(status, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
 
-            // Indica si el receptor esta activo en segundo plano.
-            Spacer(Modifier.height(4.dp))
-            // serviceRefresh solo sirve para forzar la recomposicion cuando
-            // pulsamos un boton (el estado vive en el servicio, no en Compose).
+            // ---- estado del receptor (una linea, sin duplicar informacion)
+            Spacer(Modifier.height(6.dp))
             val serviceRefresh = remember { mutableStateOf(0) }
             key(serviceRefresh.value) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         when {
-                            ReceiverService.isRunning -> "● Receptor activo en segundo plano"
+                            ReceiverService.isRunning -> "● Receptor activo"
                             ReceiverService.isPaused -> "● Receptor en pausa"
                             else -> "● Receptor detenido"
                         },
@@ -125,8 +186,6 @@ fun MainScreen(
                         },
                         modifier = Modifier.weight(1f)
                     )
-                    // Controles del receptor: los mismos que trae la notificacion,
-                    // pero aqui a mano para no tener que desplegarla.
                     if (ReceiverService.isRunning) {
                         TextButton(onClick = {
                             ReceiverService.send(activity, ReceiverService.ACTION_PAUSE)
@@ -151,101 +210,76 @@ fun MainScreen(
                 Text("$p %", style = MaterialTheme.typography.bodySmall)
             }
 
-            Spacer(Modifier.height(12.dp))
-
-            // Aviso claro del estado del archivo que se va a enviar
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp)) {
-                    if (filesToSend.isEmpty()) {
-                        Text("Sin archivos que enviar", fontWeight = FontWeight.Bold)
-                        Text(
-                            "Usa Compartir desde la Galeria o cualquier app y elige TransferBubble.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    } else {
-                        Text("Listo para enviar (${filesToSend.size}):", fontWeight = FontWeight.Bold)
-                        filesToSend.take(5).forEach {
-                            Text("• ${it.fileName} (${it.size / 1024} KB)",
-                                style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Equipos cercanos", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                if (scanning) CircularProgressIndicator(modifier = Modifier.size(20.dp))
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                items(peers) { peer ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        onClick = { sendTo(peer) }
-                    ) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(peer.displayName, fontWeight = FontWeight.SemiBold)
-                                Text("${peer.ip} · v${peer.version}",
-                                    style = MaterialTheme.typography.bodySmall)
-                            }
-                            // Boton explicito: en la prueba anterior no quedaba
-                            // claro que hubiera que pulsar para enviar.
-                            FilledTonalButton(onClick = { sendTo(peer) }) {
-                                Icon(Icons.Default.Send, contentDescription = null,
-                                    modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Enviar")
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (received.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text("Recibidos (Descargas/TransferBubble):", fontWeight = FontWeight.Bold)
-                received.takeLast(3).forEach {
-                    Text("• $it", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = { scan() }, modifier = Modifier.fillMaxWidth(), enabled = !scanning) {
-                Text(if (scanning) "Buscando..." else "Buscar equipos")
-            }
-
-            // ---- BANDEJA (igual que la de la burbuja, pero dentro de la app)
+            // ---- BANDEJA: unica lista de archivos y equipos (con checks)
             //
-            // El usuario pidio que la bandeja de la app fuese como la de la
-            // burbuja: elegir con CHECKS que archivos enviar y a que equipos.
-            Spacer(Modifier.height(12.dp))
-            var refresco by remember { mutableStateOf(0) }
-            key(refresco) {
+            // Aqui estaba la tarjeta duplicada "Listo para enviar (n)"; se ha
+            // eliminado a peticion del usuario. La bandeja ya muestra los
+            // archivos elegibles y es donde se marca que enviar y a quien.
+            Spacer(Modifier.height(8.dp))
+            key(refrescoBandeja) {
                 BandejaCard(
                     activity = activity,
                     peers = peers,
-                    alCambiar = { refresco++ }
+                    alCambiar = { refrescoBandeja++ }
                 )
             }
 
-            // ---- FASE 4: burbuja flotante
-            Spacer(Modifier.height(8.dp))
-            val contexto = activity
-            val tieneOverlay = remember { mutableStateOf(BurbujaService.tienePermiso(contexto)) }
+            // ---- aviso pequeno si acaba de llegar algo por Compartir
+            if (filesToSend.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Compartido ahora: ${filesToSend.size} archivo(s). " +
+                    "Ya estan en la bandeja; marca el equipo y pulsa Enviar.",
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+
+            // ---- equipos cercanos (envio directo, sin pasar por la bandeja)
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Equipos cercanos", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = { scan() }, enabled = !scanning) {
+                    Text(if (scanning) "Buscando..." else "Buscar")
+                }
+            }
+            if (peers.isEmpty()) {
+                Text(
+                    "Sin equipos por ahora. Enciende TransferBubble en el otro movil.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            peers.forEach { peer ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    onClick = { sendTo(peer) }
+                ) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(peer.displayName, fontWeight = FontWeight.SemiBold)
+                            Text("${peer.ip} · v${peer.version}",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        FilledTonalButton(onClick = { sendTo(peer) }) {
+                            Icon(Icons.Default.Send, contentDescription = null,
+                                modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Enviar")
+                        }
+                    }
+                }
+            }
+
+            // ---- burbuja flotante (ahora SIEMPRE alcanzable al desplazar)
+            Spacer(Modifier.height(14.dp))
+            val tieneOverlay = remember { mutableStateOf(BurbujaService.tienePermiso(activity)) }
             val burbujaActiva = remember { mutableStateOf(BurbujaService.activa) }
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
                     Text("Burbuja flotante", fontWeight = FontWeight.Bold)
                     Text(
-                        "La burbuja queda encima de todo: guarda archivos en la bandeja " +
-                        "y envialos cuando quieras, eligiendo archivos y equipos con checks.",
+                        "Queda encima de todo. Tiene una ✕ para cerrarla desde ella misma.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(Modifier.height(8.dp))
@@ -261,12 +295,12 @@ fun MainScreen(
                             }) { Text("Dar permiso") }
                         } else if (!burbujaActiva.value) {
                             FilledTonalButton(onClick = {
-                                BurbujaService.start(contexto)
+                                BurbujaService.start(activity)
                                 burbujaActiva.value = true
                             }) { Text("Activar burbuja") }
                         } else {
                             FilledTonalButton(onClick = {
-                                BurbujaService.stop(contexto)
+                                BurbujaService.stop(activity)
                                 burbujaActiva.value = false
                             }) { Text("Ocultar burbuja") }
                         }
@@ -280,10 +314,23 @@ fun MainScreen(
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
+                    Text(
+                        "Recuerda: el boton Detener de la notificacion apaga el receptor Y la burbuja.",
+                        style = MaterialTheme.typography.labelSmall
+                    )
                 }
             }
+
+            // ---- recibidos
+            if (received.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                Text("Recibidos (Descargas/TransferBubble):", fontWeight = FontWeight.Bold)
+                received.takeLast(5).forEach {
+                    Text("• $it", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
         }
     }
-
-    LaunchedEffect(Unit) { scan() }
 }
