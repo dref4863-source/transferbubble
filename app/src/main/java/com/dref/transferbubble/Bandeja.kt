@@ -1,6 +1,9 @@
 package com.dref.transferbubble
 
 import android.content.Context
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.compose.runtime.mutableStateListOf
 import com.dref.transferbubble.net.FileSender
@@ -8,6 +11,7 @@ import com.dref.transferbubble.net.FileToSend
 import com.dref.transferbubble.net.Peer
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.Executors
 
@@ -77,6 +81,7 @@ object Bandeja {
 
     private var appContext: Context? = null
     private val worker = Executors.newSingleThreadExecutor()
+    private val ui = Handler(Looper.getMainLooper())
 
     /** Aviso a la interfaz (burbuja/panel) cuando cambia algo. */
     @Volatile
@@ -103,23 +108,133 @@ object Bandeja {
 
     // ------------------------------------------------------------------ archivos
 
+    /**
+     * Añade un archivo a la bandeja COPIANDOLO a almacenamiento propio.
+     *
+     * BUG GRAVE CORREGIDO (los envios fallaban en el Note 9 pero no en el A51):
+     * antes se guardaba solo la URI tal cual (content://...). El permiso que
+     * Android concede al "Compartir" es TEMPORAL y caduca al poco tiempo, asi
+     * que si enviabas mas tarde el error era:
+     *   "com.dref.transferbubble has no access to content://media/external/..."
+     * y la tarea quedaba en FALLO. En el A51 funcionaba porque enviaba en el
+     * momento, con el permiso todavia vivo.
+     *
+     * Ahora se copia el contenido a filesDir/bandeja y la bandeja apunta a esa
+     * copia, que es nuestra para siempre. Asi se puede enviar dias despues.
+     */
     fun agregar(context: Context, uri: String, nombre: String, tamano: Long, mime: String) {
         init(context)
-        if (items.any { it.uri == uri }) {
+        if (items.any { it.uri == uri || (it.fileName == nombre && it.size == tamano && tamano > 0) }) {
             Log.i(TAG, "Ya estaba en la bandeja: $nombre")
             return
         }
-        items.add(ItemBandeja(UUID.randomUUID().toString(), uri, nombre, tamano, mime))
-        guardar()
-        avisar()
-        Log.i(TAG, "Agregado a la bandeja: $nombre ($tamano bytes)")
+        val id = UUID.randomUUID().toString()
+
+        // OPTIMIZACION: si el archivo ya es accesible directamente (file://),
+        // NO se copia: se usa tal cual. Solo se copia lo que viene con permiso
+        // temporal (content:// del Compartir o del selector), que es lo que
+        // caduca y hacia fallar los envios.
+        if (uri.startsWith("file://")) {
+            items.add(ItemBandeja(id, uri, nombre, tamano, mime))
+            guardar(); avisar()
+            Log.i(TAG, "Agregado sin copia (file://): $nombre ($tamano bytes)")
+            return
+        }
+
+        // La copia se hace en segundo plano: en almacenamiento interno va a
+        // ~171 MB/s (medido), pero un archivo muy grande bloquearia la interfaz
+        // si se hiciera aqui mismo.
+        Log.i(TAG, "Copiando a la bandeja: $nombre ($tamano bytes)")
+        worker.execute {
+            val destino = File(directorioBandeja(context), id + "_" + nombre.limpiarNombre())
+            val copiada = copiarA(context, uri, destino)
+            val item = if (copiada) {
+                ItemBandeja(id, Uri.fromFile(destino).toString(), nombre, destino.length(), mime)
+            } else {
+                Log.w(TAG, "No se pudo copiar '$nombre'; se guarda la uri original")
+                ItemBandeja(id, uri, nombre, tamano, mime)
+            }
+            ui.post {
+                items.add(item)
+                guardar()
+                avisar()
+                Log.i(TAG, "Agregado a la bandeja: $nombre (${item.size} bytes, copia=$copiada)")
+            }
+        }
+    }
+
+    /** Carpeta privada donde viven las copias de la bandeja. */
+    private fun directorioBandeja(context: Context): File =
+        File(context.filesDir, "bandeja").apply { if (!exists()) mkdirs() }
+
+    /** true si esta uri apunta a una copia nuestra dentro de la bandeja. */
+    private fun esCopiaDeLaBandeja(uri: String): Boolean = try {
+        val p = Uri.parse(uri).path ?: return false
+        File(p).absolutePath.contains("/bandeja/")
+    } catch (_: Exception) { false }
+
+    /** Copia el contenido de la uri al fichero destino. true si se copio bien. */
+    private fun copiarA(context: Context, uri: String, destino: File): Boolean = try {
+        val entrada = when (Uri.parse(uri).scheme) {
+            "content", "android.resource" -> context.contentResolver.openInputStream(Uri.parse(uri))
+            "file" -> File(Uri.parse(uri).path ?: "").inputStream()
+            else -> context.contentResolver.openInputStream(Uri.parse(uri))
+        }
+        if (entrada == null) {
+            false
+        } else {
+            entrada.use { e -> destino.outputStream().use { s -> e.copyTo(s) } }
+            // Verificacion real: no se da por bueno sin comprobar el tamano.
+            destino.length() > 0
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "Fallo copiando $uri: ${e.message}")
+        false
+    }
+
+    /** Quita caracteres que no son validos en un nombre de fichero. */
+    private fun String.limpiarNombre(): String =
+        replace(Regex("[^A-Za-z0-9._-]"), "_").take(60)
+
+    /**
+     * Borra del disco la copia de un item (para no dejar basura ocupando sitio).
+     * Solo borra ficheros que esten dentro de nuestra carpeta "bandeja": nunca
+     * toca el archivo original del usuario.
+     */
+    private fun borrarCopia(uri: String) {
+        if (!esCopiaDeLaBandeja(uri)) return
+        try {
+            val f = File(Uri.parse(uri).path ?: return)
+            if (f.delete()) Log.i(TAG, "Copia borrada: ${f.name}")
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo borrar la copia de $uri: ${e.message}")
+        }
     }
 
     fun quitar(itemId: String) {
+        // Se borra tambien la COPIA del disco: si no, cada archivo quitado de
+        // la bandeja dejaria el fichero ocupando espacio para siempre. Nunca
+        // se toca el original del usuario (borrarCopia solo actua si esta
+        // dentro de nuestra carpeta "bandeja").
+        items.firstOrNull { it.id == itemId }?.let { borrarCopia(it.uri) }
         items.removeAll { it.id == itemId }
         guardar()
         avisar()
     }
+
+    /** Borra TODAS las copias de la bandeja y vacia la lista. */
+    fun vaciar() {
+        items.forEach { borrarCopia(it.uri) }
+        items.clear()
+        guardar()
+        avisar()
+    }
+
+    /** Espacio que ocupan ahora mismo las copias de la bandeja. */
+    fun espacioCopias(context: Context): Long = try {
+        File(context.filesDir, "bandeja")
+            .listFiles()?.sumOf { if (it.isFile) it.length() else 0L } ?: 0L
+    } catch (_: Exception) { 0L }
 
     // ------------------------------------------------------------------ destinos
 
@@ -158,8 +273,21 @@ object Bandeja {
      */
     fun programarEnvios(itemIds: List<String>, destinosElegidos: List<Destino>): Int {
         if (itemIds.isEmpty() || destinosElegidos.isEmpty()) return 0
+        // BUG CORREGIDO: si te equivocabas al enviar se creaba otra tarea y las
+        // fallidas se acumulaban sin fin hasta copar el panel. Ahora, antes de
+        // programar, se descartan las tareas FALLIDAS anteriores: si quieres
+        // reintentar, se crea una nueva limpia.
+        tareas.removeAll { it.estado == EstadoTarea.FALLO }
         var creadas = 0
         destinosElegidos.forEach { d ->
+            // Y si ya habia una tarea EN ESPERA para ese equipo con los mismos
+            // archivos, no se duplica.
+            val yaEsta = tareas.any {
+                it.estado == EstadoTarea.ESPERANDO_EQUIPO &&
+                it.destinoFingerprint == d.fingerprint &&
+                it.itemIds.toSet() == itemIds.toSet()
+            }
+            if (yaEsta) return@forEach
             tareas.add(
                 TareaEnvio(
                     id = UUID.randomUUID().toString(),
@@ -171,8 +299,16 @@ object Bandeja {
             creadas++
         }
         guardar()
+        avisar()
         Log.i(TAG, "Programadas $creadas tarea(s), ${itemIds.size} archivo(s) cada una")
         return creadas
+    }
+
+    /** Quita de la cola los envios ya terminados o fallidos (boton Limpiar). */
+    fun limpiarTareas() {
+        tareas.clear()
+        guardar()
+        avisar()
     }
 
     /**

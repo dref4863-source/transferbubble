@@ -81,6 +81,19 @@
                 android:value="burbuja flotante de envio de archivos (bandeja)" />
         </service>
 
+<!--
+          Activity invisible: solo abre el selector de archivos del sistema
+          cuando pulsas "Añadir" en el panel de la burbuja (una ventana de
+          superposicion no puede recoger el resultado por si sola).
+          Tema transparente para que no se vea ninguna pantalla intermedia.
+        -->
+        <activity
+            android:name=".ElegirArchivosActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
     </application>
 
 </manifest>

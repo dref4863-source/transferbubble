@@ -221,6 +221,20 @@ fun MainScreen(
                 Text(if (scanning) "Buscando..." else "Buscar equipos")
             }
 
+            // ---- BANDEJA (igual que la de la burbuja, pero dentro de la app)
+            //
+            // El usuario pidio que la bandeja de la app fuese como la de la
+            // burbuja: elegir con CHECKS que archivos enviar y a que equipos.
+            Spacer(Modifier.height(12.dp))
+            var refresco by remember { mutableStateOf(0) }
+            key(refresco) {
+                BandejaCard(
+                    activity = activity,
+                    peers = peers,
+                    alCambiar = { refresco++ }
+                )
+            }
+
             // ---- FASE 4: burbuja flotante
             Spacer(Modifier.height(8.dp))
             val contexto = activity
@@ -238,7 +252,6 @@ fun MainScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (!tieneOverlay.value) {
                             FilledTonalButton(onClick = {
-                                // Manda al dialogo del sistema "Aparecer encima de otras apps".
                                 activity.startActivity(
                                     android.content.Intent(
                                         android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -267,13 +280,6 @@ fun MainScreen(
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
-                    Text(
-                        "Bandeja: ${Bandeja.items.size} archivo(s)" +
-                        if (Bandeja.tareas.isNotEmpty())
-                            " · ${Bandeja.tareas.count { it.estado == EstadoTarea.ESPERANDO_EQUIPO }} en espera"
-                        else "",
-                        style = MaterialTheme.typography.bodySmall
-                    )
                 }
             }
         }

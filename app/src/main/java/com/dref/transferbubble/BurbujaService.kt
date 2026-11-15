@@ -134,12 +134,17 @@ class BurbujaService : Service() {
     private fun mostrarBurbuja() {
         if (burbuja != null) return
         val w = wm ?: return
-        val tam = dp(58)
+        // BUG CORREGIDO ("no se puede pulsar facil, se escurre"):
+        // antes eran 58dp y el arrastre se activaba con solo 10dp de movimiento,
+        // asi que el mas minimo temblor del dedo contaba como arrastre y el
+        // panel no se abria nunca. Ahora la burbuja es mas grande y hace falta
+        // un desplazamiento claro para arrastrarla.
+        val tam = dp(76)
 
         val v = TextView(this).apply {
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
-            textSize = 15f
+            textSize = 19f
             setTypeface(null, Typeface.BOLD)
             text = textoBurbuja()
             background = circulo(0xFF1565C0.toInt())
@@ -159,18 +164,31 @@ class BurbujaService : Service() {
         v.setOnTouchListener(object : View.OnTouchListener {
             private var ini = 0L
             private var movido = false
+            private var abajoX = 0f
+            private var abajoY = 0f
             override fun onTouch(vista: View, e: MotionEvent): Boolean {
                 when (e.action) {
-                    MotionEvent.ACTION_DOWN -> { ini = System.currentTimeMillis(); movido = false; return true }
+                    MotionEvent.ACTION_DOWN -> {
+                        ini = System.currentTimeMillis()
+                        movido = false
+                        abajoX = e.rawX
+                        abajoY = e.rawY
+                        return true
+                    }
                     MotionEvent.ACTION_MOVE -> {
-                        if (abs(e.rawX.toInt() - p.x) > dp(10) || abs(e.rawY.toInt() - p.y) > dp(10)) movido = true
-                        p.x = (e.rawX.toInt() - tam / 2).coerceAtLeast(0)
-                        p.y = (e.rawY.toInt() - tam / 2).coerceAtLeast(0)
-                        try { w!!.updateViewLayout(vista, p) } catch (_: Exception) {}
+                        // Umbral claro (22dp) para no confundir un toque con un arrastre.
+                        if (abs(e.rawX - abajoX) > dp(22) || abs(e.rawY - abajoY) > dp(22)) movido = true
+                        if (movido) {
+                            p.x = (e.rawX.toInt() - tam / 2).coerceAtLeast(0)
+                            p.y = (e.rawY.toInt() - tam / 2).coerceAtLeast(0)
+                            try { w!!.updateViewLayout(vista, p) } catch (_: Exception) {}
+                        }
                         return true
                     }
                     MotionEvent.ACTION_UP -> {
-                        if (!movido && System.currentTimeMillis() - ini < 400) abrirPanel()
+                        // Se abre con un toque corto, o con pulsacion algo larga
+                        // sin desplazamiento (mas tolerante que antes).
+                        if (!movido && System.currentTimeMillis() - ini < 900) abrirPanel()
                         return true
                     }
                 }
@@ -211,7 +229,19 @@ class BurbujaService : Service() {
             context = this,
             alCerrar = { cerrarPanel() },
             alEnviar = { archivos, equipos -> programar(archivos, equipos) },
-            peersActuales = { peersVistos }
+            peersActuales = { peersVistos },
+            // "Añadir" del panel: se abre el selector del sistema y lo elegido
+            // entra en la bandeja. Hace falta una activity porque desde una
+            // ventana de superposicion no se puede recoger el resultado.
+            alElegir = {
+                try {
+                    val i = Intent(this, ElegirArchivosActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(i)
+                } catch (e: Exception) {
+                    Log.e(TAG, "No se pudo abrir el selector: ${e.message}")
+                }
+            }
         )
         try {
             w.addView(creado.vista, p)

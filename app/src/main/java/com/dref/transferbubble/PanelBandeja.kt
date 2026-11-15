@@ -29,7 +29,9 @@ class PanelBandeja(
     private val context: Context,
     private val alCerrar: () -> Unit,
     private val alEnviar: (List<String>, List<Destino>) -> Int,
-    private val peersActuales: () -> List<Peer>
+    private val peersActuales: () -> List<Peer>,
+    /** Abre el selector del sistema para añadir archivos a la bandeja. */
+    private val alElegir: () -> Unit = {}
 ) {
 
     val vista: View
@@ -88,7 +90,15 @@ class PanelBandeja(
         raiz.addView(cab)
 
         // ---- 1) archivos
-        raiz.addView(seccion("1) Archivos en la bandeja"))
+        val filaArch = filaSeccion("1) Archivos en la bandeja", "Añadir", 0xFF1B5E20.toInt()) {
+            alElegir()
+        }
+        // El boton Vaciar borra tambien las copias del disco (libera espacio).
+        filaArch.addView(boton("Vaciar", 0xFF4E342E.toInt()) {
+            Bandeja.vaciar()
+            refrescar()
+        })
+        raiz.addView(filaArch)
         val scrollA = ScrollView(context).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
@@ -110,9 +120,24 @@ class PanelBandeja(
         raiz.addView(scrollE)
 
         // ---- 3) cola y boton
-        raiz.addView(seccion("Cola de envios"))
+        //
+        // BUG CORREGIDO: la cola de envios no tenia limite de altura, asi que
+        // al acumularse tareas fallidas empujaba los archivos fuera de la
+        // pantalla y ya no se podian marcar. Ahora la cola tiene una altura
+        // FIJA pequena, solo muestra los ultimos 3 envios y tiene un boton
+        // "Limpiar".
+        raiz.addView(filaSeccion("Cola de envios (ultimos 3)", "Limpiar", 0xFF5D4037.toInt()) {
+            Bandeja.limpiarTareas()
+            refrescar()
+        })
+        val scrollT = ScrollView(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(96)
+            )
+            addView(contenedorTareas)
+        }
         contenedorTareas.orientation = LinearLayout.VERTICAL
-        raiz.addView(contenedorTareas)
+        raiz.addView(scrollT)
 
         tituloEnviar.apply {
             setTextColor(0xFFFFFFFF.toInt())
@@ -143,6 +168,28 @@ class PanelBandeja(
         raiz.addView(tituloEnviar)
 
         return raiz
+    }
+
+    /**
+     * Fila de seccion con un boton a la derecha (para "Añadir" y "Limpiar").
+     * Antes solo habia texto, y el usuario no tenia forma de añadir archivos
+     * directamente desde la burbuja.
+     */
+    private fun filaSeccion(t: String, etiquetaBoton: String, color: Int, alPulsar: () -> Unit): View {
+        val fila = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(12), 0, dp(6))
+        }
+        fila.addView(TextView(context).apply {
+            text = t
+            setTextColor(0xFF9FB3C8.toInt())
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        fila.addView(boton(etiquetaBoton, color, alPulsar))
+        return fila
     }
 
     private fun seccion(t: String) = TextView(context).apply {
@@ -187,6 +234,11 @@ class PanelBandeja(
             ))
             return
         }
+        // Info de espacio: transparencia sobre el coste real de guardar copias.
+        val total = items.sumOf { it.size }
+        contenedorArchivos.addView(vacio(
+            "${items.size} archivo(s) · ${total / (1024 * 1024)} MB"
+        ))
         items.forEach { item ->
             val fila = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -300,7 +352,13 @@ class PanelBandeja(
             contenedorTareas.addView(vacio("Sin envios pendientes."))
             return
         }
-        tareas.forEach { t ->
+        // Solo los ULTIMOS 3: si se acumulan fallos, no deben copar el panel
+        // (era el bug de "no dejaba ver los archivos para envio").
+        val recientes = tareas.takeLast(3).reversed()
+        if (tareas.size > 3) {
+            contenedorTareas.addView(vacio("(${tareas.size - 3} envio(s) mas arriba; pulsa Limpiar)"))
+        }
+        recientes.forEach { t ->
             val color = when (t.estado) {
                 EstadoTarea.ENVIADO -> 0xFF2E7D32.toInt()
                 EstadoTarea.FALLO -> 0xFFC62828.toInt()
