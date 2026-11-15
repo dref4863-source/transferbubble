@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableStateOf
 import com.dref.transferbubble.net.FileToSend
 import com.dref.transferbubble.net.HttpReceiver
 import com.dref.transferbubble.net.PeerDiscovery
@@ -18,12 +19,15 @@ class MainActivity : ComponentActivity() {
     lateinit var receiver: HttpReceiver
         private set
 
-    /** Archivos que llegaron por el menu Compartir de otra app. */
-    var incomingFiles: List<FileToSend> = emptyList()
-        private set
-
-    var incomingText: String? = null
-        private set
+    /**
+     * Archivos que llegan por el menu Compartir.
+     *
+     * Es un estado observable de Compose (mutableStateOf) a proposito: con
+     * launchMode=singleTask la Activity se reutiliza y onNewIntent se dispara
+     * con la app ya abierta. Una lista normal NO provocaria recomposicion y el
+     * usuario tocaba el equipo sin que se enviara nada (bug observado).
+     */
+    val sharedFiles = mutableStateOf<List<FileToSend>>(emptyList())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,8 +43,7 @@ class MainActivity : ComponentActivity() {
                     MainScreen(
                         activity = this,
                         discovery = discovery,
-                        receiver = receiver,
-                        sharedFiles = incomingFiles
+                        receiver = receiver
                     )
                 }
             }
@@ -53,21 +56,24 @@ class MainActivity : ComponentActivity() {
         handleShareIntent(intent)
     }
 
-    /** Lee ACTION_SEND / ACTION_SEND_MULTIPLE y resuelve nombre y tamano reales. */
+    /** Lee ACTION_SEND / ACTION_SEND_MULTIPLE y resuelve nombre, tamano y tipo. */
     private fun handleShareIntent(intent: Intent?) {
         intent ?: return
-        when (intent.action) {
+        val newFiles: List<FileToSend> = when (intent.action) {
             Intent.ACTION_SEND -> {
-                val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-                    ?: return
-                incomingFiles = listOf(resolveFile(uri, intent.type))
+                intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                    ?.let { listOf(resolveFile(it, intent.type)) } ?: emptyList()
             }
             Intent.ACTION_SEND_MULTIPLE -> {
-                val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-                    ?: return
-                incomingFiles = uris.map { resolveFile(it, intent.type) }
+                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                    ?.map { resolveFile(it, intent.type) } ?: emptyList()
             }
-            else -> return
+            else -> emptyList()
+        }
+        if (newFiles.isNotEmpty()) {
+            android.util.Log.i("TB-Main", "Compartir recibido: ${newFiles.size} archivo(s)")
+            newFiles.forEach { android.util.Log.i("TB-Main", "  ${it.fileName} (${it.size} bytes) ${it.uri}") }
+            sharedFiles.value = newFiles
         }
     }
 
@@ -82,7 +88,14 @@ class MainActivity : ComponentActivity() {
                 if (iSize >= 0 && !c.isNull(iSize)) size = c.getLong(iSize)
             }
         }
+        // Si el proveedor no informa del tamano, se pregunta al descriptor.
+        if (size <= 0) {
+            size = try {
+                contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
+            } catch (_: Exception) { 0L }
+        }
         val type = mime ?: contentResolver.getType(uri) ?: "application/octet-stream"
+        android.util.Log.i("TB-Main", "Resuelto: name=$name size=$size type=$type")
         return FileToSend(uri.toString(), name, size, type)
     }
 }

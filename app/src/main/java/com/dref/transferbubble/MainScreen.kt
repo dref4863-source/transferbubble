@@ -13,7 +13,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dref.transferbubble.net.FileSender
-import com.dref.transferbubble.net.FileToSend
 import com.dref.transferbubble.net.HttpReceiver
 import com.dref.transferbubble.net.Peer
 import com.dref.transferbubble.net.PeerDiscovery
@@ -26,10 +25,13 @@ import kotlinx.coroutines.withContext
 fun MainScreen(
     activity: MainActivity,
     discovery: PeerDiscovery,
-    receiver: HttpReceiver,
-    sharedFiles: List<FileToSend>
+    receiver: HttpReceiver
 ) {
     val scope = rememberCoroutineScope()
+
+    // Leemos el estado observable de la Activity: asi al compartir desde otra
+    // app sin cerrar la nuestra, la interfaz se actualiza sola.
+    val filesToSend by activity.sharedFiles
 
     var peers by remember { mutableStateOf<List<Peer>>(emptyList()) }
     var scanning by remember { mutableStateOf(false) }
@@ -37,10 +39,6 @@ fun MainScreen(
     var progress by remember { mutableStateOf<Int?>(null) }
     var received by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    // Los archivos que llegan por "Compartir" son lo que vamos a enviar.
-    val filesToSend = remember(sharedFiles) { sharedFiles }
-
-    // Avisos del receptor
     DisposableEffect(Unit) {
         receiver.onFileReceived = { file ->
             activity.runOnUiThread {
@@ -48,9 +46,7 @@ fun MainScreen(
                 status = "Recibido: ${file.name}"
             }
         }
-        onDispose {
-            receiver.onFileReceived = null
-        }
+        onDispose { receiver.onFileReceived = null }
     }
 
     fun scan() {
@@ -60,13 +56,15 @@ fun MainScreen(
             val result = withContext(Dispatchers.IO) { discovery.discover() }
             peers = result
             scanning = false
-            status = if (result.isEmpty()) "No se encontro ningun equipo\n(activa la app en el otro dispositivo)" else "${result.size} equipo(s) encontrado(s)"
+            status = if (result.isEmpty())
+                "No se encontro ningun equipo. Comprueba que la otra app este abierta."
+            else "${result.size} equipo(s) encontrado(s)"
         }
     }
 
     fun sendTo(peer: Peer) {
         if (filesToSend.isEmpty()) {
-            status = "Comparte un archivo desde otra app para enviarlo"
+            status = "Primero comparte un archivo desde otra app (Compartir -> TransferBubble)"
             return
         }
         scope.launch {
@@ -81,7 +79,7 @@ fun MainScreen(
                 ) { p -> progress = p.percent }
             }
             progress = null
-            status = if (ok) "Enviado a ${peer.alias}" else "Fallo el envio a ${peer.alias}"
+            status = if (ok) "Enviado a ${peer.alias} correctamente" else "Fallo el envio a ${peer.alias}"
         }
     }
 
@@ -103,39 +101,39 @@ fun MainScreen(
                 .fillMaxSize()
                 .padding(16.dp)
         ) {
-            Text(
-                text = status,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium
-            )
+            Text(status, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
 
             progress?.let { p ->
                 Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(
-                    progress = { p / 100f },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                LinearProgressIndicator(progress = { p / 100f }, modifier = Modifier.fillMaxWidth())
                 Text("$p %", style = MaterialTheme.typography.bodySmall)
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
 
-            if (filesToSend.isNotEmpty()) {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text("Para enviar (${filesToSend.size}):", fontWeight = FontWeight.Bold)
+            // Aviso claro del estado del archivo que se va a enviar
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    if (filesToSend.isEmpty()) {
+                        Text("Sin archivos que enviar", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Usa Compartir desde la Galeria o cualquier app y elige TransferBubble.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Text("Listo para enviar (${filesToSend.size}):", fontWeight = FontWeight.Bold)
                         filesToSend.take(5).forEach {
                             Text("• ${it.fileName} (${it.size / 1024} KB)",
                                 style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
-                Spacer(Modifier.height(16.dp))
             }
 
+            Spacer(Modifier.height(16.dp))
+
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Equipos cercanos", fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f))
+                Text("Equipos cercanos", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 if (scanning) CircularProgressIndicator(modifier = Modifier.size(20.dp))
             }
 
@@ -149,16 +147,20 @@ fun MainScreen(
                             .padding(vertical = 4.dp),
                         onClick = { sendTo(peer) }
                     ) {
-                        Row(
-                            Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(peer.displayName, fontWeight = FontWeight.SemiBold)
-                                Text("${peer.ip} · ${peer.version}",
+                                Text("${peer.ip} · v${peer.version}",
                                     style = MaterialTheme.typography.bodySmall)
                             }
-                            Icon(Icons.Default.Send, contentDescription = "Enviar")
+                            // Boton explicito: en la prueba anterior no quedaba
+                            // claro que hubiera que pulsar para enviar.
+                            FilledTonalButton(onClick = { sendTo(peer) }) {
+                                Icon(Icons.Default.Send, contentDescription = null,
+                                    modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Enviar")
+                            }
                         }
                     }
                 }
@@ -166,23 +168,18 @@ fun MainScreen(
 
             if (received.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                Text("Recibidos (Downloads/TransferBubble):", fontWeight = FontWeight.Bold)
+                Text("Recibidos (Descargas/TransferBubble):", fontWeight = FontWeight.Bold)
                 received.takeLast(3).forEach {
                     Text("• $it", style = MaterialTheme.typography.bodySmall)
                 }
             }
 
             Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = { scan() },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !scanning
-            ) {
+            OutlinedButton(onClick = { scan() }, modifier = Modifier.fillMaxWidth(), enabled = !scanning) {
                 Text(if (scanning) "Buscando..." else "Buscar equipos")
             }
         }
     }
 
-    // Busqueda automatica al abrir
     LaunchedEffect(Unit) { scan() }
 }
