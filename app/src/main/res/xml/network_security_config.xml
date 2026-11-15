@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  TransferBubble habla con equipos de la red local por HTTP en claro.
+  El certificado del protocolo LocalSend es autofirmado, asi que permitimos
+  trafico en claro para toda la app (no hay datos saliendo a Internet).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
