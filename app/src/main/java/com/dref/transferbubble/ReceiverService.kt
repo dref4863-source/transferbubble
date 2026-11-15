@@ -147,6 +147,11 @@ class ReceiverService : Service() {
     private fun resume() {
         Log.i(TAG, "Reanudando recepcion")
         isPaused = false
+        // IMPORTANTE: si antes se pulso "Detener", aquello llamo a
+        // Rastreo.detener() y dejo el motor apagado. Sin esta linea, reanudar
+        // volvia a escuchar pero los ENVIOS se quedaban mudos para siempre
+        // (nadie llamaba a Bandeja.procesar). Bug detectado en la revision.
+        Rastreo.iniciar(this)
         startReceiver()
         updateNotification()
     }
