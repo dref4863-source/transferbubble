@@ -116,6 +116,13 @@ class MainActivity : ComponentActivity() {
             android.util.Log.i("TB-Main", "Compartir recibido: ${newFiles.size} archivo(s)")
             newFiles.forEach { android.util.Log.i("TB-Main", "  ${it.fileName} (${it.size} bytes) ${it.uri}") }
             sharedFiles.value = newFiles
+
+            // FASE 4: ademas de quedar listos para enviar desde la app, se
+            // guardan en la BANDEJA. Asi se pueden ir acumulando varios
+            // archivos a lo largo del dia y enviarlos despues desde la burbuja.
+            newFiles.forEach { f ->
+                Bandeja.agregar(this, f.uri, f.fileName, f.size, f.mimeType)
+            }
         }
     }
 

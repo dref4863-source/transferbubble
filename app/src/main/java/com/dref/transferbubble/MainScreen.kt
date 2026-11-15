@@ -220,6 +220,59 @@ fun MainScreen(
             OutlinedButton(onClick = { scan() }, modifier = Modifier.fillMaxWidth(), enabled = !scanning) {
                 Text(if (scanning) "Buscando..." else "Buscar equipos")
             }
+
+            // ---- FASE 4: burbuja flotante
+            Spacer(Modifier.height(8.dp))
+            val contexto = activity
+            val tieneOverlay = remember { mutableStateOf(BurbujaService.tienePermiso(contexto)) }
+            val burbujaActiva = remember { mutableStateOf(BurbujaService.activa) }
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("Burbuja flotante", fontWeight = FontWeight.Bold)
+                    Text(
+                        "La burbuja queda encima de todo: guarda archivos en la bandeja " +
+                        "y envialos cuando quieras, eligiendo archivos y equipos con checks.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!tieneOverlay.value) {
+                            FilledTonalButton(onClick = {
+                                // Manda al dialogo del sistema "Aparecer encima de otras apps".
+                                activity.startActivity(
+                                    android.content.Intent(
+                                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        android.net.Uri.parse("package:" + activity.packageName)
+                                    )
+                                )
+                            }) { Text("Dar permiso") }
+                        } else if (!burbujaActiva.value) {
+                            FilledTonalButton(onClick = {
+                                BurbujaService.start(contexto)
+                                burbujaActiva.value = true
+                            }) { Text("Activar burbuja") }
+                        } else {
+                            FilledTonalButton(onClick = {
+                                BurbujaService.stop(contexto)
+                                burbujaActiva.value = false
+                            }) { Text("Ocultar burbuja") }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            when {
+                                !tieneOverlay.value -> "Falta el permiso de superposicion"
+                                burbujaActiva.value -> "● Burbuja activa"
+                                else -> "Burbuja desactivada"
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Text(
+                        "Bandeja: ${Bandeja.items.size} archivo(s)",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
         }
     }
 

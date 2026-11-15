@@ -7,6 +7,10 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- FASE 4: burbuja flotante por encima de otras apps (se pide al usuario) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Obligatorio desde Android 14 para el servicio specialUse de la burbuja -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- Android 13+ : lectura de medios para el explorador propio -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -63,6 +67,19 @@
             android:name=".ReceiverService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!--
+          FASE 4: burbuja flotante. specialUse porque no encaja en las categorias
+          tipicas: mantiene una ventana de superposicion con la bandeja de envios.
+        -->
+        <service
+            android:name=".BurbujaService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="burbuja flotante de envio de archivos (bandeja)" />
+        </service>
 
     </application>
 
