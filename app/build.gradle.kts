@@ -33,8 +33,8 @@ android {
         applicationId = "com.dref.transferbubble"
         minSdk = 24
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.6.1"
+        versionCode = 13
+        versionName = "0.7.0"
     }
 
     if (hasKeystore) {

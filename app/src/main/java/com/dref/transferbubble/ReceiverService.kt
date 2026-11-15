@@ -33,7 +33,11 @@ class ReceiverService : Service() {
     companion object {
         private const val TAG = "TB-Service"
         private const val CHANNEL_ID = "tb_receiver"
+        /** Canal aparte para los AVISOS de recepcion (este si suena/vibra). */
+        private const val CHANNEL_RECIBIDOS = "tb_recibidos"
         private const val NOTIF_ID = 1001
+        /** Id distinto para el aviso de "archivo recibido" (no pisa el permanente). */
+        private const val NOTIF_ID_RECIBIDO = 1003
 
         const val ACTION_PAUSE = "com.dref.transferbubble.PAUSE"
         const val ACTION_RESUME = "com.dref.transferbubble.RESUME"
@@ -117,8 +121,30 @@ class ReceiverService : Service() {
     private fun startReceiver() {
         if (receiver != null) return
         receiver = HttpReceiver(this).apply {
+            // Aviso EN CUANTO el otro equipo empieza a enviar. Se pide al
+            // usuario que "uno se de cuenta de que se recibio un archivo": con
+            // este aviso ya se entera desde el primer segundo, aunque la app
+            // este cerrada y aunque la transferencia tarde.
+            onIncomingRequest = { _sessionId, alias, total ->
+                Log.i(TAG, "Recepcion iniciada por '$alias' ($total bytes)")
+                avisoRecepcion(
+                    titulo = "Recibiendo de $alias",
+                    texto = if (total > 0) "${total / 1024} KB entrando ahora mismo"
+                            else "Transferencia en curso",
+                    terminado = false
+                )
+            }
+
             onFileReceived = { file ->
                 Log.i(TAG, "Archivo recibido: ${file.name} (${file.length()} bytes)")
+                // PETICION DEL USUARIO: aviso claro de que YA llego el archivo.
+                // Antes solo se cambiaba el texto de la notificacion permanente
+                // (que es de importancia baja), asi que era facil no enterarse.
+                avisoRecepcion(
+                    titulo = "Archivo recibido",
+                    texto = "${file.name} (${file.length() / 1024} KB) en Descargas/TransferBubble",
+                    terminado = true
+                )
                 // OJO: hay que cualificar con Companion. Dentro de este apply(),
                 // "onFileReceived" se resuelve al de HttpReceiver (que espera un
                 // File) y provocaba: "Argument type mismatch: actual type is
@@ -200,12 +226,71 @@ class ReceiverService : Service() {
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NotificationManager::class.java)
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Receptor TransferBubble",
                 NotificationManager.IMPORTANCE_LOW
             ).apply { description = "Mantiene el equipo visible para recibir archivos" }
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+            nm?.createNotificationChannel(channel)
+
+            // PETICION DEL USUARIO: "al enviar un archivo al otro equipo,
+            // deberia haber alguna notificacion de que se recibio un archivo".
+            // El canal del receptor es IMPORTANCE_LOW a proposito (la notificacion
+            // permanente no debe molestar cada vez que cambia un texto). Si se
+            // usara ese mismo canal, el aviso de "archivo recibido" NO sonaria ni
+            // se veria resaltado, que es justo lo que el usuario pedia.
+            // Por eso se crea un canal APARTE, de importancia HIGH: este si
+            // aparece en pantalla y suena/vibra.
+            val canalRecibidos = NotificationChannel(
+                CHANNEL_RECIBIDOS,
+                "Archivos recibidos",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Avisa cuando llega un archivo desde otro equipo"
+                enableVibration(true)
+            }
+            nm?.createNotificationChannel(canalRecibidos)
+        }
+    }
+
+    /**
+     * Aviso de que HA LLEGADO un archivo.
+     *
+     * - "recibiendo": aparece en cuanto el otro equipo empieza a enviar
+     *   (prepare-upload), con sonido/vibracion. Asi uno se entera de inmediato,
+     *   incluso con la app cerrada.
+     * - "recibido": se actualiza al terminar, con el nombre y el tamano, y se
+     *   vuelve descartable (setAutoCancel) para poder quitarla con un toque.
+     */
+    private fun avisoRecepcion(
+        titulo: String,
+        texto: String,
+        terminado: Boolean
+    ) {
+        try {
+            val abrir = PendingIntent.getActivity(
+                this, 1,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                Notification.Builder(this, CHANNEL_RECIBIDOS)
+            else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+            }
+            builder.setContentTitle(titulo)
+                .setContentText(texto)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentIntent(abrir)
+                .setAutoCancel(terminado)
+            if (!terminado) builder.setOngoing(true)
+
+            val nm = getSystemService(NotificationManager::class.java)
+            nm?.notify(NOTIF_ID_RECIBIDO, builder.build())
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo mostrar el aviso de recepcion: ${e.message}")
         }
     }
 

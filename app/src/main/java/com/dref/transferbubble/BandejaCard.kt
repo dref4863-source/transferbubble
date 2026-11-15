@@ -1,6 +1,5 @@
 package com.dref.transferbubble
 
-import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -38,10 +37,12 @@ fun BandejaCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Bandeja", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 TextButton(onClick = {
-                    // Abre el selector del sistema para añadir archivos.
-                    activity.startActivity(
-                        Intent(activity, ElegirArchivosActivity::class.java)
-                    )
+                    // BUG CORREGIDO ("el boton Añadir no carga ningun archivo"):
+                    // antes se lanzaba una activity invisible, que el manifiesto
+                    // destruia al abrirse el selector (noHistory) y el archivo
+                    // elegido se perdia. Ahora se abre el selector DIRECTAMENTE
+                    // desde esta activity, que es lo natural y no puede fallar.
+                    activity.elegirArchivos()
                 }) { Text("Añadir") }
                 if (Bandeja.tareas.isNotEmpty()) {
                     TextButton(onClick = {

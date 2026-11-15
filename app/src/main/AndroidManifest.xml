@@ -86,12 +86,18 @@
           cuando pulsas "Añadir" en el panel de la burbuja (una ventana de
           superposicion no puede recoger el resultado por si sola).
           Tema transparente para que no se vea ninguna pantalla intermedia.
+
+          BUG CORREGIDO ("el boton Añadir no carga ningun archivo"):
+          aqui estaba `android:noHistory="true"`. Ese flag DESTRUYE la activity
+          en cuanto deja de estar visible, asi que al abrirse el selector del
+          sistema Android mataba esta activity y, al volver, ya no habia nadie
+          que recibiera el archivo elegido: se perdia en silencio y la bandeja
+          no se llenaba nunca. Se ha QUITADO el flag.
         -->
         <activity
             android:name=".ElegirArchivosActivity"
             android:exported="false"
             android:excludeFromRecents="true"
-            android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
     </application>

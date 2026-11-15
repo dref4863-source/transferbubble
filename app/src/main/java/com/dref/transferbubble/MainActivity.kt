@@ -75,6 +75,55 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * SELECTOR DE ARCHIVOS DEL PROPIO PANEL PRINCIPAL.
+     *
+     * BUG CORREGIDO ("el boton Añadir no carga ningun archivo"):
+     * antes, tanto el panel principal como el de la burbuja usaban la
+     * ElegirArchivosActivity invisible. En el panel principal eso era un rodeo
+     * innecesario: ya estamos en una activity y podemos abrir el selector aqui
+     * mismo, con el mecanismo estandar de Android. Ademas la activity invisible
+     * tenia otro problema (ver el manifiesto).
+     *
+     * Se usa ActivityResultContracts.StartActivityForResult (no el
+     * startActivityForResult antiguo) porque registra el resultado ANTES de
+     * lanzar el selector: asi no hay carrera posible.
+     */
+    private val elegirLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val data = result.data
+            val uris = mutableListOf<Uri>()
+            data?.data?.let { uris.add(it) }
+            data?.clipData?.let { clip ->
+                for (i in 0 until clip.itemCount) uris.add(clip.getItemAt(i).uri)
+            }
+            android.util.Log.i("TB-Main", "Selector: ${uris.size} archivo(s) elegido(s)")
+            uris.forEach { uri ->
+                val f = resolveFile(uri, contentResolver.getType(uri))
+                Bandeja.agregar(this, f.uri, f.fileName, f.size, f.mimeType)
+            }
+        } else {
+            android.util.Log.i("TB-Main", "Selector cerrado sin elegir nada")
+        }
+    }
+
+    /** Abre el selector de archivos del sistema (boton "Añadir"). */
+    fun elegirArchivos() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        try {
+            android.util.Log.i("TB-Main", "Abriendo el selector de archivos")
+            elegirLauncher.launch(i)
+        } catch (e: Exception) {
+            android.util.Log.e("TB-Main", "No se pudo abrir el selector: ${e.message}")
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -87,7 +136,11 @@ class MainActivity : ComponentActivity() {
             // Android 13+
             arrayOf(
                 android.Manifest.permission.READ_MEDIA_IMAGES,
-                android.Manifest.permission.READ_MEDIA_VIDEO
+                android.Manifest.permission.READ_MEDIA_VIDEO,
+                // Android 13+ exige pedir POST_NOTIFICATIONS en tiempo de
+                // ejecucion; sin el, aunque el codigo publique el aviso, NO se
+                // ve nada. Es imprescindible para el aviso de "archivo recibido".
+                android.Manifest.permission.POST_NOTIFICATIONS
             )
         } else {
             // Android 12 y anteriores

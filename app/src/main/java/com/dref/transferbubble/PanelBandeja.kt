@@ -112,10 +112,11 @@ class PanelBandeja(
             setTypeface(null, Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
-        cab.addView(boton("Cerrar", 0xFF37474F.toInt()) { alCerrar() })
-        // "Salir" apaga la burbuja entera (lo pedido: cerrarla desde la propia
-        // burbuja). "Cerrar" solo oculta este panel.
-        cab.addView(boton("✕ Salir", 0xFFC62828.toInt()) { alCerrarTodo() })
+        cab.addView(boton("_", 0xFF37474F.toInt()) { alCerrar() })
+        // "X" suelta apaga la burbuja entera (lo pedido: cerrarla desde la
+        // propia burbuja). El guion bajo "_" solo OCULTA/minimiza este panel,
+        // igual que el boton de minimizar del sistema.
+        cab.addView(boton("✕", 0xFFC62828.toInt()) { alCerrarTodo() })
         raiz.addView(cab)
 
         // ---- 1) archivos
